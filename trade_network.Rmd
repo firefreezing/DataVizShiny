@@ -1,0 +1,139 @@
+---
+title: "Who Trades with Whom"
+author: "Fei Xing"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r packages_functions, message = FALSE, warning=FALSE, echo = FALSE}
+library(knitr)
+
+# Global knitr options
+opts_chunk$set(fig.align = "center", echo = FALSE, warning = F, message = F)
+
+library(tidyverse)
+library(stringr)
+library(readxl)
+library(lubridate)
+library(visNetwork)
+library(timevis)
+```
+
+
+```{r}
+player_add <- read_excel("fantasy_bball.xlsx", sheet = 1)
+
+player_trade <- read_excel("fantasy_bball.xlsx", sheet = 2)
+
+team <- c("Go Rockets!", "Reign Man Returns", "Pippen Ain't Easy", "Derek M's Team", "Bryan's Bold Team", "Mikan Drill", "House of Guards", "Derrick Owusu's Team", "Josh Leftin's Team", "WizKids", "Need For Sheed", "TRUST THE PROCESS")
+
+gm <- c("Sheng", "Michael", "Scott", "Derek", "Bryan", "Alex", "Fei", "Derrick", "Josh", "Matt", "Eli", "Jeremy")
+
+location <- c("NJ", "DC", "NJ", "DC", "DC", "MA", "DC", "DC", "DC", "DC", "DC", "DC")
+
+dat_gm <- data.frame(team = team, gm = gm, location = location)
+```
+
+```{r}
+team_str <- "Go Rockets!|Reign Man Returns|Pippen Ain\\'t Easy|Derek M\\'s Team|Bryan\\'s Bold Team|Mikan Drill|House of Guards|Derrick Owusu\\'s Team|Josh Leftin\\'s Team|WizKids|Need For Sheed|TRUST THE PROCESS"
+```
+
+```{r}
+# Clean the free agent market activity data:
+name_parse <- . %>% str_split(" ") %>% unlist() %>% .[1:2] %>% str_c(collapse = " ") %>%
+  str_sub(start = 1, end = str_length(.)-4)
+
+dat_player_add <- player_add %>%
+  mutate(player_clean = map_chr(player, name_parse),
+         gm = str_extract(info, team_str),
+         time = str_extract(info, "(Jan|Feb|Mar|Apr|Oct|Nov|Dec).+avatar$") %>%
+           str_sub(start = 1, end = str_length(.)-6),
+         draft_time = ifelse(str_sub(time, 1, 3) %in% c("Oct", "Nov", "Dec"),
+                           str_c("2016 ", time), str_c("2017 ", time)) %>% ymd_hm(),
+         post_dat_viz_rpt = ifelse(draft_time > ymd(20161206), 1, 0),
+         post_open_data = ifelse(draft_time > ymd(20170118), 1, 0),
+         reg_season = ifelse(draft_time < ymd(20170313), 1, 0),
+         draft_hr = hour(draft_time))
+```
+
+
+```{r}
+# Clean the trade activity data:
+
+name_parse <- . %>% str_split(" ") %>% unlist() %>% .[1:2] %>% str_c(collapse = " ") %>%
+  str_sub(start = 1, end = str_length(.)-4)
+
+player_trade_new <- player_trade %>%
+  mutate(player_clean = map_chr(player, name_parse),
+         team = str_extract(info, team_str),
+         time = str_extract(info, "(Jan|Feb|Mar|Apr|Oct|Nov|Dec).+avatar$") %>%
+           str_sub(start = 1, end = str_length(.)-6)) 
+
+for (i in 1:dim(player_trade_new)[1]){
+  if(is.na(player_trade_new$team[i])) {
+        player_trade_new$team[i] <- player_trade_new$team[(i-1)]
+    player_trade_new$time[i] <- player_trade_new$time[(i-1)]
+  }
+}
+
+player_trade_final <- player_trade_new %>%
+  left_join(dat_gm, by = "team") %>%
+  group_by(time, team) %>%
+  summarise(player = str_c(player_clean, collapse = ", "),
+            gm = first(gm),
+            location = first(location),
+            n_players = n()) %>%
+  ungroup() %>%
+  mutate(note = str_c(team, " gets ", player, sep = ""),
+         trade_time = ifelse(str_sub(time, 1, 3) %in% c("Oct", "Nov", "Dec"),
+                           str_c("2016 ", time), str_c("2017 ", time)) %>% ymd_hm(),
+         post_open_dat = ifelse(trade_time > ymd(20170118), 1, 0))
+```
+
+```{r}
+dat_player_trade <- read_csv("dat_trade_after_process.csv") %>%
+  group_by(id) %>%
+  mutate(title = str_c("<p>", note[1], "<br>", note[2], "</p>", sep = ""),
+         value = sum(n_players))
+         
+edges_from <- dat_player_trade %>%
+  filter(offer == "from") %>%
+  select(id, from = gm)
+
+edges_to <- dat_player_trade %>%
+  filter(offer == "to") %>%
+  select(id, to = gm, title, value)
+
+edges <- full_join(edges_from, edges_to, by = "id") %>%
+  ungroup() %>%
+  select(-id)
+```
+
+
+```{r}
+nodes <- data.frame(id = gm, label = team, group = location, 
+                    shape = "circularImage",
+                    image = str_c("./fantasy_bball_pics/", gm, ".jpg", sep = ""))
+
+visNetwork(nodes, edges, main = "Who Trades with Whom?", width = "100%", height = "1000px") %>% 
+  visNodes(shapeProperties = list(useBorderWithImage = TRUE),
+           borderWidth = 7, borderWidthSelected = 8) %>%
+  visGroups(groupname = "DC", color = list(border = "#E70033", background = "#E70033",
+                                           highlight = list(border = "#E70033", background = "#E70033")), 
+            shadow = list(enable = T)) %>%
+  visGroups(groupname = "NJ", color = list(border = "#34B6E4", background = "#34B6E4",
+                                           highlight = list(border = "#34B6E4", background = "#34B6E4")), 
+            shadow = list(enable = T)) %>%
+  visGroups(groupname = "MA", color = list(border = "#EF8200", background = "#EF8200",
+                                           highlight = list(border = "#EF8200", background = "#EF8200")), 
+            shadow = list(enable = T)) %>%
+  visLegend(main = "Location") %>%
+  visOptions(highlightNearest = TRUE)
+```
+
+
+
+
+
+
+
